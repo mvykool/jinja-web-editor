@@ -6,12 +6,15 @@ import {
   CompletionContext, 
   type Completion, 
   type CompletionResult,
+  type CompletionSource,
   startCompletion,
   closeCompletion
 } from "@codemirror/autocomplete";
 import { oneDark } from "@codemirror/theme-one-dark";
-import { keymap, hoverTooltip } from "@codemirror/view";
+import { keymap, hoverTooltip, EditorView as ViewExtension } from "@codemirror/view";
 import { linter, lintGutter, type Diagnostic } from "@codemirror/lint";
+import { DEFAULT_CODE } from './constants/template';
+import VariableSidebar from './components/VariablesSidebar';
 
 function getJinjaContext(doc: any, pos: number) {
   const lineStart = doc.lineAt(pos).from;
@@ -52,6 +55,20 @@ function getJinjaContext(doc: any, pos: number) {
     const content = blockMatch[2] || '';
     const hasClosing = afterText.match(/^\s*[^}]*?(%}|}|#)/);
     
+    // Check for dot notation (object.property)  
+    const dotNotationMatch = content.match(/(\w+(?:\.\w+)*)\.\s*$|(\w+(?:\.\w+)*)\.(\w*)$/);
+    if (dotNotationMatch && delimiter === '{{') {
+      const [, fullPathWithDot, fullPath, partialProperty] = dotNotationMatch;
+      const objectPath = fullPathWithDot || fullPath;
+      
+      return {
+        type: 'property_access',
+        objectPath: objectPath,
+        prefix: partialProperty || '',
+        hasClosing: !!hasClosing
+      };
+    }
+    
     return {
       type: delimiter === '{%' ? 'statement' : delimiter === '{{' ? 'expression' : 'comment',
       prefix: content.trim(),
@@ -62,7 +79,7 @@ function getJinjaContext(doc: any, pos: number) {
   return { type: 'none', prefix: '' };
 }
 
-function createJinjaCompletions(templateVariables: any) {
+function createJinjaCompletions(templateVariables: any): CompletionSource {
   return function jinjaCompletions(context: CompletionContext): CompletionResult | null {
   const pos = context.pos;
   const doc = context.state.doc;
@@ -73,7 +90,11 @@ function createJinjaCompletions(templateVariables: any) {
     return null;
   }
   
-  const word = context.matchBefore(/\w+|[{%#]/);
+  const word = context.matchBefore(/\w+|[{%#]|[\w.]+/);
+  
+  // Check if the user just typed a dot - if so, force completion
+  const charBefore = pos > 0 ? doc.sliceString(pos - 1, pos) : '';
+  const explicitDotTrigger = charBefore === '.';
   
   // Base Jinja block starters (only when not inside a block)
   const blockStarters: Completion[] = [];
@@ -181,34 +202,74 @@ function createJinjaCompletions(templateVariables: any) {
   ];
 
   // Generate variables from template context
-  const generateVariableCompletions = (obj: any, prefix: string = ''): Completion[] => {
+  const generateVariableCompletions = (obj: any, prefix: string = '', currentPath: string = ''): Completion[] => {
     const completions: Completion[] = [];
     
     Object.entries(obj).forEach(([key, value]) => {
       const fullPath = prefix ? `${prefix}.${key}` : key;
       const isObject = typeof value === 'object' && value !== null && !Array.isArray(value);
       
-      if (isObject) {
-        // Add the object itself as a completion
-        completions.push({
-          label: key,
-          type: "variable",
-          apply: fullPath,
-          detail: `Object with ${Object.keys(value).length} properties`
-        });
-        // Add nested completions
-        completions.push(...generateVariableCompletions(value, fullPath));
+      // If we're looking for completions after a dot (like "news."), only return direct properties
+      if (currentPath) {
+        if (fullPath.startsWith(currentPath + '.') && fullPath.split('.').length === currentPath.split('.').length + 1) {
+          completions.push({
+            label: key,
+            type: isObject ? "variable" : "property",
+            apply: key, // Just apply the property name, not the full path
+            detail: typeof value === 'string' ? value : isObject ? `Object with ${Object.keys(value).length} properties` : Array.isArray(value) ? 'Array' : typeof value
+          });
+        }
       } else {
-        completions.push({
-          label: key,
-          type: "variable", 
-          apply: fullPath,
-          detail: typeof value === 'string' ? value : Array.isArray(value) ? 'Array' : typeof value
-        });
+        // Regular completions
+        if (isObject) {
+          // Add the object itself as a completion
+          completions.push({
+            label: key,
+            type: "variable",
+            apply: fullPath,
+            detail: `Object with ${Object.keys(value).length} properties`
+          });
+          // Add nested completions
+          completions.push(...generateVariableCompletions(value, fullPath, currentPath));
+        } else {
+          completions.push({
+            label: key,
+            type: "variable", 
+            apply: fullPath,
+            detail: typeof value === 'string' ? value : Array.isArray(value) ? 'Array' : typeof value
+          });
+        }
       }
     });
     
     return completions;
+  };
+
+  // Get property completions for a specific object path
+  const getPropertyCompletions = (obj: any, objectPath: string): Completion[] => {
+    const pathParts = objectPath.split('.');
+    let current = obj;
+    
+    // Navigate to the object
+    for (const part of pathParts) {
+      if (current && typeof current === 'object' && current[part]) {
+        current = current[part];
+      } else {
+        return []; // Path doesn't exist
+      }
+    }
+    
+    // Return properties of the current object
+    if (current && typeof current === 'object' && !Array.isArray(current)) {
+      return Object.entries(current).map(([key, value]) => ({
+        label: key,
+        type: typeof value === 'object' && value !== null && !Array.isArray(value) ? "variable" : "property",
+        apply: key,
+        detail: typeof value === 'string' ? value : typeof value === 'object' && value !== null && !Array.isArray(value) ? `Object with ${Object.keys(value).length} properties` : Array.isArray(value) ? 'Array' : typeof value
+      }));
+    }
+    
+    return [];
   };
 
   const variables: Completion[] = [
@@ -291,6 +352,19 @@ function createJinjaCompletions(templateVariables: any) {
   } else if (jinjaContext.type === 'expression') {
     // Inside {{ }} - suggest variables, filters, operators
     allCompletions.push(...variables, ...filters, ...operators);
+  } else if (jinjaContext.type === 'property_access') {
+    // After dot notation like "news." - suggest properties of that object
+    const propertyCompletions = getPropertyCompletions(templateVariables, jinjaContext.objectPath);
+    allCompletions.push(...propertyCompletions);
+  } else if (explicitDotTrigger && jinjaContext.type === 'expression') {
+    // Handle case where user just typed a dot but context detection missed it
+    const beforeDot = doc.sliceString(Math.max(0, pos - 50), pos - 1);
+    const dotMatch = beforeDot.match(/{{[^}]*?(\w+(?:\.\w+)*)$/);
+    if (dotMatch) {
+      const objectPath = dotMatch[1];
+      const propertyCompletions = getPropertyCompletions(templateVariables, objectPath);
+      allCompletions.push(...propertyCompletions);
+    }
   }
   
   // Filter completions based on what user has typed
@@ -299,7 +373,7 @@ function createJinjaCompletions(templateVariables: any) {
     completion.label.toLowerCase().startsWith(query)
   );
   
-  if (filteredCompletions.length === 0) {
+  if (filteredCompletions.length === 0 && !explicitDotTrigger) {
     return null;
   }
   
@@ -387,46 +461,17 @@ const jinjaHover = hoverTooltip((view, pos) => {
   };
 });
 
-function advanced() {
+function Advanced() {
   const editorRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
-  const [customVariables, setCustomVariables] = useState<any>({});
-  const [showAddVariable, setShowAddVariable] = useState(false);
-  const [newVariable, setNewVariable] = useState({ path: '', description: '', type: 'string' });
+  const [allVariables, setAllVariables] = useState<any>({});
 
   useEffect(() => {
     if (!editorRef.current) return;
-    
-    // Combine built-in and custom variables for this effect
-    const allVariables = { ...builtInVariables, ...customVariables };
 
     const view = new EditorView({
       parent: editorRef.current,
-      doc: `# Should I buy BTC now?
-
-## News Item
-
-Time now: {{ system.time }}
-Headline: {{ news.headline }}
-Source: {{ news.source }}
-Time: {{ news.published_at }}
-Symbols mentioned: {% for s in news.symbols_mentioned %} {{ s.symbol }} {% endfor %}
-
-{{ news.body }}
-
-## Historical Context
-
-{{ rollups["btc"].full }}
-
-## Recent Headlines
-
-{% for recent in recent_news["btc"] %}
-- {{ recent.headline }}
-{% endfor %}
-
-## Instructions
-
-{% include templates.instructions.4o %}`,
+      doc: DEFAULT_CODE,
       extensions: [
         basicSetup,
         jinja(),
@@ -434,7 +479,17 @@ Symbols mentioned: {% for s in news.symbols_mentioned %} {{ s.symbol }} {% endfo
         autocompletion({ 
           override: [createJinjaCompletions(allVariables)],
           maxRenderedOptions: 20,
-          defaultKeymap: true
+          defaultKeymap: true,
+          activateOnTyping: true,
+          closeOnBlur: false
+        }),
+        ViewExtension.inputHandler.of((view, _from, _to, text) => {
+          // Trigger completion when user types a dot
+          if (text === '.') {
+            // Small delay to allow the character to be inserted first
+            setTimeout(() => startCompletion(view), 10);
+          }
+          return false; // Don't prevent the default input handling
         }),
         linter(jinjaLinter),
         lintGutter(),
@@ -458,82 +513,10 @@ Symbols mentioned: {% for s in news.symbols_mentioned %} {{ s.symbol }} {% endfo
       view.destroy();
       viewRef.current = null;
     };
-  }, [customVariables]); // Recreate editor when custom variables change
+  }, [allVariables]);
 
-  // Built-in template variables
-  const builtInVariables = {
-    system: {
-      time: 'Current timestamp',
-      user: 'Current user info',
-      environment: 'Runtime environment'
-    },
-    news: {
-      headline: 'News article headline',
-      source: 'News source name',
-      published_at: 'Publication timestamp',
-      symbols_mentioned: 'Array of financial symbols',
-      body: 'Full article content'
-    },
-    rollups: {
-      'btc': {
-        full: 'Complete BTC analysis',
-        summary: 'BTC summary data',
-        price: 'Current BTC price'
-      }
-    },
-    recent_news: {
-      'btc': 'Array of recent BTC news items'
-    },
-    templates: {
-      instructions: {
-        '4o': 'GPT-4 instruction template'
-      }
-    }
-  };
-
-  // templateVariables is now calculated inside useEffect as allVariables
-
-  // Add custom variable function
-  const addCustomVariable = () => {
-    if (!newVariable.path.trim()) return;
-    
-    const pathParts = newVariable.path.split('.');
-    const newVars = { ...customVariables };
-    
-    // Create nested object structure
-    let current = newVars;
-    for (let i = 0; i < pathParts.length - 1; i++) {
-      if (!current[pathParts[i]]) {
-        current[pathParts[i]] = {};
-      }
-      current = current[pathParts[i]];
-    }
-    
-    // Set the final value
-    current[pathParts[pathParts.length - 1]] = newVariable.description || newVariable.path;
-    
-    setCustomVariables(newVars);
-    setNewVariable({ path: '', description: '', type: 'string' });
-    setShowAddVariable(false);
-  };
-
-  // Remove custom variable function
-  const removeCustomVariable = (path: string) => {
-    const pathParts = path.split('.');
-    const newVars = { ...customVariables };
-    
-    if (pathParts.length === 1) {
-      delete newVars[pathParts[0]];
-    } else {
-      // Navigate to parent and delete the key
-      let current = newVars;
-      for (let i = 0; i < pathParts.length - 1; i++) {
-        current = current[pathParts[i]];
-      }
-      delete current[pathParts[pathParts.length - 1]];
-    }
-    
-    setCustomVariables(newVars);
+  const handleVariablesChange = (variables: any) => {
+    setAllVariables(variables);
   };
 
   const insertVariable = (varPath: string) => {
@@ -548,139 +531,17 @@ Symbols mentioned: {% for s in news.symbols_mentioned %} {{ s.symbol }} {% endfo
     }
   };
 
-  const renderVariables = (obj: any, prefix: string = '', level: number = 0, isCustom: boolean = false) => {
-    return Object.entries(obj).map(([key, value]) => {
-      const fullPath = prefix ? `${prefix}.${key}` : key;
-      const isObject = typeof value === 'object' && value !== null && !Array.isArray(value);
-      
-      return (
-        <div key={fullPath} className={`ml-${level * 4}`}>
-          {isObject ? (
-            <>
-              <div className="flex items-center justify-between text-blue-300 font-semibold py-1 text-sm">
-                <span>{key}</span>
-                {isCustom && level === 0 && (
-                  <button
-                    onClick={() => removeCustomVariable(key)}
-                    className="text-red-400 hover:text-red-300 ml-2 text-xs"
-                    title="Remove custom variable"
-                  >
-                    ✕
-                  </button>
-                )}
-              </div>
-              {renderVariables(value, fullPath, level + 1, isCustom)}
-            </>
-          ) : (
-            <div className="flex items-center justify-between">
-              <button
-                onClick={() => insertVariable(fullPath)}
-                className="flex-1 text-left px-2 py-1 text-green-300 hover:bg-gray-700 rounded text-sm transition-colors"
-                title={typeof value === 'string' ? value : ''}
-              >
-                <span className="text-yellow-300">{key}</span>
-                {Array.isArray(value) && <span className="text-gray-400 ml-1">[]</span>}
-              </button>
-              {isCustom && (
-                <button
-                  onClick={() => removeCustomVariable(fullPath)}
-                  className="text-red-400 hover:text-red-300 ml-2 text-xs px-1"
-                  title="Remove custom variable"
-                >
-                  ✕
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      );
-    });
-  };
-
   return (
     <div className="flex h-screen bg-gray-900">
-      {/* Variables Sidebar */}
-      <div className="w-80 bg-gray-800 border-r border-gray-600 flex flex-col">
-        <div className="p-4 border-b border-gray-600">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="text-lg font-semibold text-white">Template Variables</h2>
-            <button
-              onClick={() => setShowAddVariable(!showAddVariable)}
-              className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded transition-colors"
-            >
-              + Add
-            </button>
-          </div>
-          <p className="text-xs text-gray-400">Click to insert into template</p>
-        </div>
-        
-        {/* Add Variable Form */}
-        {showAddVariable && (
-          <div className="p-4 bg-gray-750 border-b border-gray-600">
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">Variable Path</label>
-                <input
-                  type="text"
-                  value={newVariable.path}
-                  onChange={(e) => setNewVariable({...newVariable, path: e.target.value})}
-                  placeholder="e.g., user.profile.name"
-                  className="w-full px-2 py-1 bg-gray-700 text-white text-sm rounded border border-gray-600 focus:border-blue-500 focus:outline-none"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">Description</label>
-                <input
-                  type="text"
-                  value={newVariable.description}
-                  onChange={(e) => setNewVariable({...newVariable, description: e.target.value})}
-                  placeholder="Description of this variable"
-                  className="w-full px-2 py-1 bg-gray-700 text-white text-sm rounded border border-gray-600 focus:border-blue-500 focus:outline-none"
-                />
-              </div>
-              <div className="flex gap-2">
-                <button
-                  onClick={addCustomVariable}
-                  className="px-3 py-1 bg-green-600 hover:bg-green-700 text-white text-xs rounded transition-colors"
-                >
-                  Add Variable
-                </button>
-                <button
-                  onClick={() => setShowAddVariable(false)}
-                  className="px-3 py-1 bg-gray-600 hover:bg-gray-700 text-white text-xs rounded transition-colors"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-        
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {/* Built-in Variables */}
-          <div>
-            <h3 className="text-sm font-semibold text-gray-300 mb-2">Built-in Variables</h3>
-            <div className="space-y-1">
-              {renderVariables(builtInVariables, '', 0, false)}
-            </div>
-          </div>
-          
-          {/* Custom Variables */}
-          {Object.keys(customVariables).length > 0 && (
-            <div>
-              <h3 className="text-sm font-semibold text-gray-300 mb-2">Custom Variables</h3>
-              <div className="space-y-1">
-                {renderVariables(customVariables, '', 0, true)}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
+      <VariableSidebar 
+        onInsertVariable={insertVariable}
+        onVariablesChange={handleVariablesChange}
+      />
       
       {/* Main Editor Area */}
       <div className="flex-1 flex flex-col">
         <div className="p-4 border-b border-gray-600">
-          <h1 className="text-2xl font-bold text-white">Advanced Jinja Editor</h1>
+          <h2 className="text-xl font-bold text-white">Advanced Jinja Editor</h2>
           <p className="text-sm text-gray-400 mt-1">Write Jinja2 templates with intelligent autocomplete and variable references</p>
         </div>
         <div className="flex-1 p-4">
@@ -694,4 +555,4 @@ Symbols mentioned: {% for s in news.symbols_mentioned %} {{ s.symbol }} {% endfo
   );
 }
 
-export default advanced;
+export default Advanced;

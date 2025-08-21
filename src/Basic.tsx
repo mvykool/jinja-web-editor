@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { EditorView, basicSetup } from "codemirror";
 import { jinja } from "@codemirror/lang-jinja";
 
-function Editor() {
+function Basic() {
   const editorRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -12,7 +12,7 @@ function Editor() {
       parent: editorRef.current,
       doc: `{% if user.active %}\n  {{ user.name }}\n{% endif %}`,
       extensions: [
-        basicSetup, // optional, gives you line numbers, undo/redo, etc.
+        basicSetup,
         jinja(),
       ],
     });
@@ -33,4 +33,4 @@ function Editor() {
   );
 }
 
-export default Editor;
+export default Basic;
