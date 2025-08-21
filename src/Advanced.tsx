@@ -473,6 +473,11 @@ function Advanced() {
       parent: editorRef.current,
       doc: DEFAULT_CODE,
       extensions: [
+      EditorView.theme({
+        "&": { height: "100%" }, 
+        ".cm-scroller": { minHeight: "600px" },
+        ".cm-focused": { outline: "none" },
+        }),
         basicSetup,
         jinja(),
         oneDark,
@@ -524,7 +529,7 @@ function Advanced() {
   };
 
   return (
-    <div className="flex h-full bg-gray-900">
+    <div className="flex h-screen bg-gray-900">
       <VariableSidebar 
         onInsertVariable={insertVariable}
         onVariablesChange={handleVariablesChange}

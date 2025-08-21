@@ -19,11 +19,13 @@ function App() {
             </div>
           </div>
         </nav>
-        
+
+        <div className="h-screen w-screen flex flex-col">
         <Routes>
           <Route path="/" element={<Basic />} />
           <Route path="/advanced" element={<Advanced />} />
         </Routes>
+        </div>
       </div>
     </Router>
   );
