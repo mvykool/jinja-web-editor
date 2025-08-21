@@ -27,7 +27,6 @@ function getJinjaContext(doc: any, pos: number) {
     const [fullMatch, braces, delimiter, word] = incompleteMatch;
     const matchStart = pos - fullMatch.length + fullMatch.lastIndexOf(braces);
     
-    // Single { followed by letters = partial block
     if (braces === '{' && !delimiter && word) {
       return {
         type: 'partial',
@@ -37,7 +36,6 @@ function getJinjaContext(doc: any, pos: number) {
       };
     }
     
-    // Single { with no letters yet
     if (braces === '{' && !delimiter && !word) {
       return {
         type: 'partial',
@@ -48,14 +46,12 @@ function getJinjaContext(doc: any, pos: number) {
     }
   }
   
-  // Check if we're inside a proper Jinja block
   const blockMatch = lineText.match(/.*?({%|{{|{#)\s*([^}%#]*)$/);
   if (blockMatch) {
     const delimiter = blockMatch[1];
     const content = blockMatch[2] || '';
     const hasClosing = afterText.match(/^\s*[^}]*?(%}|}|#)/);
     
-    // Check for dot notation (object.property)  
     const dotNotationMatch = content.match(/(\w+(?:\.\w+)*)\.\s*$|(\w+(?:\.\w+)*)\.(\w*)$/);
     if (dotNotationMatch && delimiter === '{{') {
       const [, fullPathWithDot, fullPath, partialProperty] = dotNotationMatch;
@@ -85,14 +81,13 @@ function createJinjaCompletions(templateVariables: any): CompletionSource {
   const doc = context.state.doc;
   const jinjaContext = getJinjaContext(doc, pos);
   
-  // Don't complete in comments
+  // NO completed in comments
   if (jinjaContext.type === 'comment') {
     return null;
   }
   
   const word = context.matchBefore(/\w+|[{%#]|[\w.]+/);
   
-  // Check if the user just typed a dot - if so, force completion
   const charBefore = pos > 0 ? doc.sliceString(pos - 1, pos) : '';
   const explicitDotTrigger = charBefore === '.';
   
@@ -215,21 +210,18 @@ function createJinjaCompletions(templateVariables: any): CompletionSource {
           completions.push({
             label: key,
             type: isObject ? "variable" : "property",
-            apply: key, // Just apply the property name, not the full path
+            apply: key,
             detail: typeof value === 'string' ? value : isObject ? `Object with ${Object.keys(value).length} properties` : Array.isArray(value) ? 'Array' : typeof value
           });
         }
       } else {
-        // Regular completions
         if (isObject) {
-          // Add the object itself as a completion
           completions.push({
             label: key,
             type: "variable",
             apply: fullPath,
             detail: `Object with ${Object.keys(value).length} properties`
           });
-          // Add nested completions
           completions.push(...generateVariableCompletions(value, fullPath, currentPath));
         } else {
           completions.push({
@@ -245,21 +237,18 @@ function createJinjaCompletions(templateVariables: any): CompletionSource {
     return completions;
   };
 
-  // Get property completions for a specific object path
   const getPropertyCompletions = (obj: any, objectPath: string): Completion[] => {
     const pathParts = objectPath.split('.');
     let current = obj;
     
-    // Navigate to the object
     for (const part of pathParts) {
       if (current && typeof current === 'object' && current[part]) {
         current = current[part];
       } else {
-        return []; // Path doesn't exist
+        return []; 
       }
     }
     
-    // Return properties of the current object
     if (current && typeof current === 'object' && !Array.isArray(current)) {
       return Object.entries(current).map(([key, value]) => ({
         label: key,
@@ -278,7 +267,7 @@ function createJinjaCompletions(templateVariables: any): CompletionSource {
     { label: "super", type: "function", apply: "super()", detail: "Parent block" },
   ];
 
-  // Common Jinja filters (minijinja compatible)
+  // Common jjinja filters 
   const filters: Completion[] = [
     { label: "default", type: "function", apply: "default($0)", detail: "Default value if undefined" },
     { label: "length", type: "function", apply: "length", detail: "Get length of sequence" },
@@ -312,7 +301,6 @@ function createJinjaCompletions(templateVariables: any): CompletionSource {
     { label: "map", type: "function", apply: "map($0)", detail: "Apply function to items" },
   ];
 
-  // Test functions (for use with 'is' keyword)
   const tests: Completion[] = [
     { label: "defined", type: "function", apply: "defined", detail: "Check if variable is defined" },
     { label: "undefined", type: "function", apply: "undefined", detail: "Check if variable is undefined" },
@@ -353,11 +341,9 @@ function createJinjaCompletions(templateVariables: any): CompletionSource {
     // Inside {{ }} - suggest variables, filters, operators
     allCompletions.push(...variables, ...filters, ...operators);
   } else if (jinjaContext.type === 'property_access') {
-    // After dot notation like "news." - suggest properties of that object
     const propertyCompletions = getPropertyCompletions(templateVariables, jinjaContext.objectPath);
     allCompletions.push(...propertyCompletions);
   } else if (explicitDotTrigger && jinjaContext.type === 'expression') {
-    // Handle case where user just typed a dot but context detection missed it
     const beforeDot = doc.sliceString(Math.max(0, pos - 50), pos - 1);
     const dotMatch = beforeDot.match(/{{[^}]*?(\w+(?:\.\w+)*)$/);
     if (dotMatch) {
@@ -377,11 +363,9 @@ function createJinjaCompletions(templateVariables: any): CompletionSource {
     return null;
   }
   
-  // Calculate the correct replacement range
   let replaceFrom = word ? word.from : pos;
   let replaceTo = pos;
   
-  // For partial blocks, use the exact range we detected
   if (jinjaContext.type === 'partial' && jinjaContext.replaceStart !== undefined) {
     replaceFrom = jinjaContext.replaceStart;
     replaceTo = jinjaContext.replaceEnd || pos;
@@ -395,7 +379,7 @@ function createJinjaCompletions(templateVariables: any): CompletionSource {
   };
 }
 
-// Simple Jinja linter - only catch obvious syntax errors
+// ssimple Jinja linter - this is only catch obvious syntax errors
 function jinjaLinter(view: EditorView): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   const doc = view.state.doc;
@@ -404,6 +388,7 @@ function jinjaLinter(view: EditorView): Diagnostic[] {
   // Look for obvious syntax errors like mismatched delimiters
   const patterns = [
     // Wrong delimiter combinations like {{% or %}} 
+    // Gosh i hate regex so much
     { regex: /{{%|%}}/g, message: "Mixed delimiter syntax" },
     { regex: /{{\s*%|%\s*}}/g, message: "Mixed delimiter syntax" },
     // Very basic unclosed check - only flag if line ends with just opening
@@ -539,7 +524,7 @@ function Advanced() {
       <div className="flex-1 flex flex-col">
         <div className="p-4 border-b border-gray-600">
           <h2 className="text-xl font-bold text-white">Advanced Jinja Editor</h2>
-          <p className="text-sm text-gray-400 mt-1">Write Jinja2 templates with intelligent autocomplete and variable references</p>
+          <p className="text-sm text-gray-400 mt-1">Write Jinja templates with variable references</p>
         </div>
         <div className="flex-1">
           <div
