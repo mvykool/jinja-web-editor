@@ -13,7 +13,7 @@ function App() {
               <Link to="/" className="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium">
                 Basic
               </Link>
-              <Link to="/advance" className="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium">
+              <Link to="/advanced" className="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium">
                 Advanced
               </Link>
             </div>
