@@ -11,7 +11,7 @@ import {
   closeCompletion
 } from "@codemirror/autocomplete";
 import { oneDark } from "@codemirror/theme-one-dark";
-import { keymap, hoverTooltip, EditorView as ViewExtension } from "@codemirror/view";
+import { keymap, hoverTooltip } from "@codemirror/view";
 import { linter, lintGutter, type Diagnostic } from "@codemirror/lint";
 import { DEFAULT_CODE } from './constants/template';
 import VariableSidebar from './components/VariablesSidebar';
@@ -390,7 +390,7 @@ function createJinjaCompletions(templateVariables: any): CompletionSource {
   return {
     from: replaceFrom,
     to: replaceTo,
-    options: filteredCompletions.slice(0, 20) // Limit to 20 items for performance
+    options: filteredCompletions.slice(0, 20)
   };
   };
 }
@@ -483,14 +483,6 @@ function Advanced() {
           activateOnTyping: true,
           closeOnBlur: false
         }),
-        ViewExtension.inputHandler.of((view, _from, _to, text) => {
-          // Trigger completion when user types a dot
-          if (text === '.') {
-            // Small delay to allow the character to be inserted first
-            setTimeout(() => startCompletion(view), 10);
-          }
-          return false; // Don't prevent the default input handling
-        }),
         linter(jinjaLinter),
         lintGutter(),
         jinjaHover,
@@ -532,7 +524,7 @@ function Advanced() {
   };
 
   return (
-    <div className="flex h-screen bg-gray-900">
+    <div className="flex h-full bg-gray-900">
       <VariableSidebar 
         onInsertVariable={insertVariable}
         onVariablesChange={handleVariablesChange}
@@ -544,7 +536,7 @@ function Advanced() {
           <h2 className="text-xl font-bold text-white">Advanced Jinja Editor</h2>
           <p className="text-sm text-gray-400 mt-1">Write Jinja2 templates with intelligent autocomplete and variable references</p>
         </div>
-        <div className="flex-1 p-4">
+        <div className="flex-1">
           <div
             ref={editorRef}
             className="w-full h-full border border-gray-600 rounded-lg shadow-lg"
