@@ -1,6 +1,6 @@
 import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
-import Advanced from './Advanced';
 import Basic from './Basic';
+import Advanced from './Advanced';
 
 function App() {
   return (
