@@ -15,6 +15,7 @@ import { keymap, hoverTooltip } from "@codemirror/view";
 import { linter, lintGutter, type Diagnostic } from "@codemirror/lint";
 import { DEFAULT_CODE } from './constants/template';
 import VariableSidebar from './components/VariablesSidebar';
+import InlineJinjaForm from './components/InlineJinjaForm';
 
 function getJinjaContext(doc: any, pos: number) {
   const lineStart = doc.lineAt(pos).from;
@@ -81,7 +82,7 @@ function createJinjaCompletions(templateVariables: any): CompletionSource {
   const doc = context.state.doc;
   const jinjaContext = getJinjaContext(doc, pos);
   
-  // NO completed in comments
+  // Don't complete in comments
   if (jinjaContext.type === 'comment') {
     return null;
   }
@@ -450,6 +451,11 @@ function Advanced() {
   const editorRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const [allVariables, setAllVariables] = useState<any>({});
+  const [showInlineForm, setShowInlineForm] = useState<{
+    type: 'rollup' | 'for' | 'if' | 'variable' | 'filter' | 'similar_headlines';
+    position: { top: number; left: number };
+    wordRange: { from: number; to: number };
+  } | null>(null);
 
   useEffect(() => {
     if (!editorRef.current) return;
@@ -473,6 +479,31 @@ function Advanced() {
           activateOnTyping: true,
           closeOnBlur: false
         }),
+        // Simple dot-trigger for property access
+        keymap.of([
+          {
+            key: ".",
+            run: (view) => {
+              view.dispatch(view.state.update(view.state.changeByRange(range => ({
+                changes: {from: range.from, to: range.to, insert: "."},
+                range: {from: range.from + 1, to: range.to + 1}
+              }))));
+              setTimeout(() => startCompletion(view), 50);
+              return true;
+            }
+          },
+          {
+            key: " ",
+            run: (view) => {
+              const pos = view.state.selection.main.head;
+              // Check for inline form triggers before inserting space
+              if (checkForInlineFormTrigger(view, pos)) {
+                return true; // Don't insert the space, form is triggered
+              }
+              return false; // Let default space insertion happen
+            }
+          }
+        ]),
         linter(jinjaLinter),
         lintGutter(),
         jinjaHover,
@@ -513,6 +544,70 @@ function Advanced() {
     }
   };
 
+  // Check if user typed a trigger keyword
+  const checkForInlineFormTrigger = (view: EditorView, pos: number) => {
+    const doc = view.state.doc;
+    const line = doc.lineAt(pos);
+    const lineText = doc.sliceString(line.from, pos);
+    
+    // Keywords that trigger inline forms
+    const triggers = [
+      { keyword: 'rollup', type: 'rollup' as const },
+      { keyword: 'forloop', type: 'for' as const },
+      { keyword: 'ifblock', type: 'if' as const },
+      { keyword: 'var', type: 'variable' as const },
+      { keyword: 'filter', type: 'filter' as const },
+      { keyword: 'similar_headlines', type: 'similar_headlines' as const },
+    ];
+
+    for (const trigger of triggers) {
+      const regex = new RegExp(`\\b${trigger.keyword}$`);
+      const match = lineText.match(regex);
+      
+      if (match) {
+        const wordStart = pos - trigger.keyword.length;
+        const wordEnd = pos;
+        
+        // Get cursor position in editor for form positioning
+        const coords = view.coordsAtPos(pos);
+        if (coords) {
+          setShowInlineForm({
+            type: trigger.type,
+            position: {
+              top: coords.bottom + 5,
+              left: coords.left
+            },
+            wordRange: { from: wordStart, to: wordEnd }
+          });
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  const handleFormSubmit = (jinjaCode: string) => {
+    if (viewRef.current && showInlineForm) {
+      const view = viewRef.current;
+      view.dispatch({
+        changes: {
+          from: showInlineForm.wordRange.from,
+          to: showInlineForm.wordRange.to,
+          insert: jinjaCode
+        }
+      });
+      setShowInlineForm(null);
+      view.focus();
+    }
+  };
+
+  const handleFormCancel = () => {
+    setShowInlineForm(null);
+    if (viewRef.current) {
+      viewRef.current.focus();
+    }
+  };
+
   return (
     <div className="flex h-screen bg-gray-900">
       <VariableSidebar 
@@ -524,13 +619,28 @@ function Advanced() {
       <div className="flex-1 flex flex-col">
         <div className="p-4 border-b border-gray-600">
           <h2 className="text-xl font-bold text-white">Advanced Jinja Editor</h2>
-          <p className="text-sm text-gray-400 mt-1">Write Jinja templates with variable references</p>
+          <p className="text-sm text-gray-400 mt-1">
+            Write Jinja templates with variable references
+            <span className="block text-xs text-blue-400 mt-1">
+              💡 Try typing: rollup, forloop, ifblock, var, filter, similar_headlines + space
+            </span>
+          </p>
         </div>
-        <div className="flex-1">
+        <div className="flex-1 relative">
           <div
             ref={editorRef}
             className="w-full h-full border border-gray-600 rounded-lg shadow-lg"
           />
+          
+          {/* Notion-style Inline Form */}
+          {showInlineForm && (
+            <InlineJinjaForm
+              type={showInlineForm.type}
+              position={showInlineForm.position}
+              onSubmit={handleFormSubmit}
+              onCancel={handleFormCancel}
+            />
+          )}
         </div>
       </div>
     </div>
