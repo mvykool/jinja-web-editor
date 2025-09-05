@@ -9,15 +9,13 @@ interface InlineFormProps {
   position: { top: number; left: number };
   onSubmit: (jinjaCode: string) => void;
   onCancel: () => void;
-  initialValue?: string;
 }
 
 const InlineJinjaForm: React.FC<InlineFormProps> = ({
   type,
   position,
   onSubmit,
-  onCancel,
-  initialValue = ''
+  onCancel
 }) => {
   const [formData, setFormData] = useState<any>({});
   const formRef = useRef<HTMLDivElement>(null);

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { EditorView, basicSetup } from "codemirror";
+import { EditorSelection } from "@codemirror/state";
 import { jinja } from "@codemirror/lang-jinja";
 import { 
   autocompletion, 
@@ -486,7 +487,7 @@ function Advanced() {
             run: (view) => {
               view.dispatch(view.state.update(view.state.changeByRange(range => ({
                 changes: {from: range.from, to: range.to, insert: "."},
-                range: {from: range.from + 1, to: range.to + 1}
+                range: EditorSelection.range(range.from + 1, range.to + 1)
               }))));
               setTimeout(() => startCompletion(view), 50);
               return true;
