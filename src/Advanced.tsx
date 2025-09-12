@@ -17,6 +17,7 @@ import { linter, lintGutter, type Diagnostic } from "@codemirror/lint";
 import { DEFAULT_CODE } from './constants/template';
 import VariableSidebar from './components/VariablesSidebar';
 import InlineJinjaForm from './components/InlineJinjaForm';
+import CommandPalette from './components/CommandPalette';
 
 function getJinjaContext(doc: any, pos: number) {
   const lineStart = doc.lineAt(pos).from;
@@ -381,23 +382,24 @@ function createJinjaCompletions(templateVariables: any): CompletionSource {
   };
 }
 
-// ssimple Jinja linter - this is only catch obvious syntax errors
-function jinjaLinter(view: EditorView): Diagnostic[] {
+// Enhanced Jinja linter for comprehensive syntax error highlighting
+function createJinjaLinter(templateVariables: any) {
+  return function jinjaLinter(view: EditorView): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   const doc = view.state.doc;
   const text = doc.toString();
-  // Simpli check: to find blocks that are clearly malformed
-  // Look for obvious syntax errors like mismatched delimiters
-  const patterns = [
-    // Wrong delimiter combinations like {{% or %}} 
-    // Gosh i hate regex so much
+  
+  // Template variables are passed from the factory function
+  
+  // 1. Check for mixed delimiter syntax
+  const mixedDelimiters = [
     { regex: /{{%|%}}/g, message: "Mixed delimiter syntax" },
     { regex: /{{\s*%|%\s*}}/g, message: "Mixed delimiter syntax" },
-    // Very basic unclosed check - only flag if line ends with just opening
-    { regex: /^\s*{[%{#]\s*$/gm, message: "Incomplete block" }
+    { regex: /{#%|%#}/g, message: "Mixed delimiter syntax" },
+    { regex: /{%#|#%}/g, message: "Mixed delimiter syntax" },
   ];
   
-  patterns.forEach(({ regex, message }) => {
+  mixedDelimiters.forEach(({ regex, message }) => {
     let match;
     while ((match = regex.exec(text)) !== null) {
       diagnostics.push({
@@ -408,8 +410,245 @@ function jinjaLinter(view: EditorView): Diagnostic[] {
       });
     }
   });
+
+  // 2. Parse all Jinja blocks and check for balanced delimiters
+  const blocks: Array<{
+    type: 'expression' | 'statement' | 'comment';
+    start: number;
+    end: number;
+    content: string;
+    opener: string;
+    closer?: string;
+  }> = [];
+  
+  const blockRegex = /({[%{#])(.*?)([%}#]}|$)/gs;
+  let match;
+  while ((match = blockRegex.exec(text)) !== null) {
+    const [fullMatch, opener, content, closer] = match;
+    const start = match.index;
+    const end = start + fullMatch.length;
+    
+    // Check for incomplete blocks (missing closing delimiter)
+    if (!closer || closer === '$') {
+      diagnostics.push({
+        from: start,
+        to: end,
+        severity: 'error',
+        message: 'Unclosed block'
+      });
+      continue;
+    }
+    
+    // Check for mismatched delimiters
+    const expectedCloser = opener === '{{' ? '}}' : opener === '{%' ? '%}' : '#}';
+    if (closer !== expectedCloser) {
+      diagnostics.push({
+        from: end - closer.length,
+        to: end,
+        severity: 'error',
+        message: `Expected '${expectedCloser}' but found '${closer}'`
+      });
+      continue;
+    }
+
+    blocks.push({
+      type: opener === '{{' ? 'expression' : opener === '{%' ? 'statement' : 'comment',
+      start,
+      end,
+      content: content.trim(),
+      opener,
+      closer
+    });
+  }
+
+  // 3. Check for balanced open/close tags
+  const tagStack: Array<{
+    tag: string;
+    position: number;
+    fullContent: string;
+  }> = [];
+  
+  const blockTags = ['if', 'for', 'block', 'macro', 'raw', 'with', 'filter', 'call', 'set', 'trans', 'autoescape'];
+  const endTags = ['endif', 'endfor', 'endblock', 'endmacro', 'endraw', 'endwith', 'endfilter', 'endcall', 'endset', 'endtrans', 'endautoescape'];
+  
+  blocks.forEach(block => {
+    if (block.type === 'statement') {
+      const content = block.content;
+      const words = content.split(/\s+/);
+      const firstWord = words[0];
+      
+      // Check for typos in control keywords first
+      const commonTypos = [
+        { typo: 'esle', correct: 'else' },
+        { typo: 'esli', correct: 'elif' },
+        { typo: 'fro', correct: 'for' },
+        { typo: 'ofr', correct: 'for' },
+        { typo: 'fi', correct: 'if' },
+        { typo: 'endfi', correct: 'endif' },
+        { typo: 'enffor', correct: 'endfor' },
+        { typo: 'endofr', correct: 'endfor' },
+        { typo: 'endfi', correct: 'endif' }
+      ];
+      
+      commonTypos.forEach(({ typo, correct }) => {
+        if (firstWord === typo) {
+          const wordStart = block.start + block.opener.length + block.content.indexOf(typo);
+          diagnostics.push({
+            from: wordStart,
+            to: wordStart + typo.length,
+            severity: 'error',
+            message: `Did you mean '${correct}'?`
+          });
+          return;
+        }
+      });
+      
+      // Check for opening tags
+      if (blockTags.includes(firstWord)) {
+        tagStack.push({
+          tag: firstWord,
+          position: block.start,
+          fullContent: content
+        });
+      }
+      // Check for closing tags
+      else if (endTags.includes(firstWord)) {
+        const expectedTag = firstWord.substring(3); // Remove 'end' prefix
+        if (tagStack.length === 0) {
+          diagnostics.push({
+            from: block.start,
+            to: block.end,
+            severity: 'error',
+            message: `Unexpected '${firstWord}' - no matching opening tag`
+          });
+        } else {
+          const lastTag = tagStack[tagStack.length - 1];
+          if (lastTag.tag !== expectedTag) {
+            diagnostics.push({
+              from: block.start,
+              to: block.end,
+              severity: 'error',
+              message: `Expected 'end${lastTag.tag}' but found '${firstWord}'`
+            });
+          } else {
+            tagStack.pop(); // Correctly matched, remove from stack
+          }
+        }
+      }
+      // Check for invalid end tags
+      else if (firstWord.startsWith('end') && !endTags.includes(firstWord)) {
+        const wordStart = block.start + block.opener.length + block.content.indexOf(firstWord);
+        diagnostics.push({
+          from: wordStart,
+          to: wordStart + firstWord.length,
+          severity: 'error',
+          message: `Invalid end tag '${firstWord}'`
+        });
+      }
+    }
+  });
+  
+  // Report unclosed tags
+  tagStack.forEach(unclosedTag => {
+    diagnostics.push({
+      from: unclosedTag.position,
+      to: unclosedTag.position + unclosedTag.fullContent.length + 4, // +4 for {% %}
+      severity: 'error',
+      message: `Unclosed '${unclosedTag.tag}' tag - missing 'end${unclosedTag.tag}'`
+    });
+  });
+
+  // 4. Check for malformed strings and parentheses
+  blocks.forEach(block => {
+    const content = block.content;
+    const contentStart = block.start + block.opener.length;
+    
+    // Check for unmatched quotes
+    const quotes = ['"', "'"];
+    quotes.forEach(quote => {
+      const quoteMatches = [...content.matchAll(new RegExp(quote, 'g'))];
+      if (quoteMatches.length % 2 !== 0) {
+        const lastQuotePos = quoteMatches[quoteMatches.length - 1].index!;
+        diagnostics.push({
+          from: contentStart + lastQuotePos,
+          to: contentStart + lastQuotePos + 1,
+          severity: 'error',
+          message: `Unmatched ${quote} quote`
+        });
+      }
+    });
+    
+    // Check for unmatched parentheses/brackets
+    const pairs = [
+      { open: '(', close: ')', name: 'parenthesis' },
+      { open: '[', close: ']', name: 'bracket' },
+      { open: '{', close: '}', name: 'brace' }
+    ];
+    
+    pairs.forEach(({ open, close, name }) => {
+      let depth = 0;
+      let lastUnmatched = -1;
+      
+      for (let i = 0; i < content.length; i++) {
+        if (content[i] === open) {
+          depth++;
+          if (depth === 1) lastUnmatched = i;
+        } else if (content[i] === close) {
+          depth--;
+          if (depth < 0) {
+            diagnostics.push({
+              from: contentStart + i,
+              to: contentStart + i + 1,
+              severity: 'error',
+              message: `Unexpected closing ${name}`
+            });
+            depth = 0; // Reset to continue checking
+          }
+        }
+      }
+      
+      if (depth > 0) {
+        diagnostics.push({
+          from: contentStart + lastUnmatched,
+          to: contentStart + lastUnmatched + 1,
+          severity: 'error',
+          message: `Unmatched opening ${name}`
+        });
+      }
+    });
+  });
+
+  // 5. Check for undefined variables (basic check)
+  const expressionBlocks = blocks.filter(b => b.type === 'expression');
+  expressionBlocks.forEach(block => {
+    const content = block.content;
+    const baseExpression = content.split('|')[0].trim(); // Remove filters
+    
+    // Skip complex expressions, literals, and built-in variables
+    if (baseExpression.includes('[') || baseExpression.includes('"') || baseExpression.includes("'") || 
+        baseExpression.includes('(') || baseExpression.includes(' ') ||
+        /^(\d+(\.\d+)?|true|false|none)$/i.test(baseExpression) ||
+        ['loop', 'super'].includes(baseExpression.split('.')[0])) {
+      return;
+    }
+    
+    const varName = baseExpression.split('.')[0];
+    
+    // Check if variable exists in template variables
+    if (varName && Object.keys(templateVariables).length > 0 && !templateVariables.hasOwnProperty(varName)) {
+      const contentStart = block.start + block.opener.length;
+      const varStart = content.indexOf(varName);
+      diagnostics.push({
+        from: contentStart + varStart,
+        to: contentStart + varStart + varName.length,
+        severity: 'error',
+        message: `Undefined variable '${varName}'`
+      });
+    }
+  });
   
   return diagnostics;
+  };
 }
 
 // Hover provider for documentation
@@ -457,6 +696,10 @@ function Advanced() {
     position: { top: number; left: number };
     wordRange: { from: number; to: number };
   } | null>(null);
+  const [showCommandPalette, setShowCommandPalette] = useState<{
+    position: { top: number; left: number };
+    wordRange: { from: number; to: number };
+  } | null>(null);
 
   useEffect(() => {
     if (!editorRef.current) return;
@@ -480,7 +723,7 @@ function Advanced() {
           activateOnTyping: true,
           closeOnBlur: false
         }),
-        // Simple dot-trigger for property access
+        // Custom key handlers
         keymap.of([
           {
             key: ".",
@@ -494,18 +737,31 @@ function Advanced() {
             }
           },
           {
-            key: " ",
+            key: "/",
             run: (view) => {
               const pos = view.state.selection.main.head;
-              // Check for inline form triggers before inserting space
-              if (checkForInlineFormTrigger(view, pos)) {
-                return true; // Don't insert the space, form is triggered
+              const line = view.state.doc.lineAt(pos);
+              const lineText = view.state.doc.sliceString(line.from, pos);
+              
+              // Only trigger command palette if at start of line or after whitespace
+              if (lineText.trim() === '') {
+                const coords = view.coordsAtPos(pos);
+                if (coords) {
+                  setShowCommandPalette({
+                    position: {
+                      top: coords.bottom + 5,
+                      left: coords.left
+                    },
+                    wordRange: { from: pos, to: pos }
+                  });
+                  return true; // Don't insert the /
+                }
               }
-              return false; // Let default space insertion happen
+              return false; // Let default / insertion happen
             }
-          }
+          },
         ]),
-        linter(jinjaLinter),
+        linter(createJinjaLinter(allVariables)),
         lintGutter(),
         jinjaHover,
         keymap.of([
@@ -529,6 +785,16 @@ function Advanced() {
     };
   }, [allVariables]);
 
+  // Update linter when variables change
+  useEffect(() => {
+    if (viewRef.current) {
+      // Force re-run of linter with new variables
+      viewRef.current.dispatch({
+        effects: []  // Empty effects to trigger a re-render
+      });
+    }
+  }, [allVariables]);
+
   const handleVariablesChange = (variables: any) => {
     setAllVariables(variables);
   };
@@ -545,47 +811,6 @@ function Advanced() {
     }
   };
 
-  // Check if user typed a trigger keyword
-  const checkForInlineFormTrigger = (view: EditorView, pos: number) => {
-    const doc = view.state.doc;
-    const line = doc.lineAt(pos);
-    const lineText = doc.sliceString(line.from, pos);
-    
-    // Keywords that trigger inline forms
-    const triggers = [
-      { keyword: 'rollup', type: 'rollup' as const },
-      { keyword: 'forloop', type: 'for' as const },
-      { keyword: 'ifblock', type: 'if' as const },
-      { keyword: 'var', type: 'variable' as const },
-      { keyword: 'filter', type: 'filter' as const },
-      { keyword: 'similar_headlines', type: 'similar_headlines' as const },
-    ];
-
-    for (const trigger of triggers) {
-      const regex = new RegExp(`\\b${trigger.keyword}$`);
-      const match = lineText.match(regex);
-      
-      if (match) {
-        const wordStart = pos - trigger.keyword.length;
-        const wordEnd = pos;
-        
-        // Get cursor position in editor for form positioning
-        const coords = view.coordsAtPos(pos);
-        if (coords) {
-          setShowInlineForm({
-            type: trigger.type,
-            position: {
-              top: coords.bottom + 5,
-              left: coords.left
-            },
-            wordRange: { from: wordStart, to: wordEnd }
-          });
-          return true;
-        }
-      }
-    }
-    return false;
-  };
 
   const handleFormSubmit = (jinjaCode: string) => {
     if (viewRef.current && showInlineForm) {
@@ -609,6 +834,32 @@ function Advanced() {
     }
   };
 
+  const handleCommandSelect = (commandId: string) => {
+    if (viewRef.current && showCommandPalette) {
+      const view = viewRef.current;
+      const coords = view.coordsAtPos(showCommandPalette.wordRange.from);
+      
+      if (coords) {
+        setShowInlineForm({
+          type: commandId as 'rollup' | 'for' | 'if' | 'variable' | 'filter' | 'similar_headlines',
+          position: {
+            top: coords.bottom + 5,
+            left: coords.left
+          },
+          wordRange: showCommandPalette.wordRange
+        });
+      }
+    }
+    setShowCommandPalette(null);
+  };
+
+  const handleCommandCancel = () => {
+    setShowCommandPalette(null);
+    if (viewRef.current) {
+      viewRef.current.focus();
+    }
+  };
+
   return (
     <div className="flex h-screen bg-gray-900">
       <VariableSidebar 
@@ -623,7 +874,7 @@ function Advanced() {
           <p className="text-sm text-gray-400 mt-1">
             Write Jinja templates with variable references
             <span className="block text-xs text-blue-400 mt-1">
-              💡 Try typing: rollup, forloop, ifblock, var, filter, similar_headlines + space
+              💡 Type <kbd className="bg-gray-700 px-1 rounded">/</kbd> at the start of a line to open command palette
             </span>
           </p>
         </div>
@@ -633,6 +884,15 @@ function Advanced() {
             className="w-full h-full border border-gray-600 rounded-lg shadow-lg"
           />
           
+          {/* Command Palette */}
+          {showCommandPalette && (
+            <CommandPalette
+              position={showCommandPalette.position}
+              onSelect={handleCommandSelect}
+              onCancel={handleCommandCancel}
+            />
+          )}
+
           {/* Notion-style Inline Form */}
           {showInlineForm && (
             <InlineJinjaForm
